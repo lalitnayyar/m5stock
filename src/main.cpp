@@ -270,11 +270,26 @@ bool configPortalActive = false;
 
 void handleConfigRoot() {
     String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-    html += "<title>M5 WiFi Setup</title></head><body style='font-family:sans-serif;margin:20px'>";
-    html += "<h2>M5 Stock Ticker - WiFi Setup</h2>";
+    html += "<title>M5 Setup</title></head><body style='font-family:sans-serif;margin:20px'>";
+    html += "<h2>M5 Stock Ticker - Setup</h2>";
     html += "<form action='/save' method='post'>";
+    html += "<h3>WiFi</h3>";
     html += "<p>SSID: <input name='ssid' length='32' style='font-size:16px;padding:5px'></p>";
     html += "<p>Password: <input name='pass' length='64' type='password' style='font-size:16px;padding:5px'></p>";
+    html += "<h3>Display</h3>";
+    html += "<p>View: <select name='view' style='font-size:16px;padding:5px'>";
+    html += "<option value='0'" + String(viewMode == 0 ? " selected" : "") + ">Card</option>";
+    html += "<option value='1'" + String(viewMode == 1 ? " selected" : "") + ">List</option>";
+    html += "</select></p>";
+    html += "<p>Idle Timeout: <select name='idle' style='font-size:16px;padding:5px'>";
+    int idleOpts[] = {0, 60, 120, 300, 600, 1800};
+    const char* idleLabels[] = {"Off", "1m", "2m", "5m", "10m", "30m"};
+    for (int j = 0; j < 6; j++) {
+        html += "<option value='" + String(idleOpts[j]) + "'" +
+                String(idleSeconds == idleOpts[j] ? " selected" : "") +
+                ">" + idleLabels[j] + "</option>";
+    }
+    html += "</select></p>";
     html += "<p><button type='submit' style='font-size:16px;padding:8px 20px'>Save & Restart</button></p>";
     html += "</form></body></html>";
     configServer.send(200, "text/html", html);
@@ -283,15 +298,19 @@ void handleConfigRoot() {
 void handleConfigSave() {
     String ssid = configServer.arg("ssid");
     String pass = configServer.arg("pass");
+    String view = configServer.arg("view");
+    String idle = configServer.arg("idle");
+
     if (ssid.length() > 0) {
         prefs.putString("wifissid", ssid);
         prefs.putString("wifipass", pass);
-        configServer.send(200, "text/html", "<h2>Saved! Restarting...</h2>");
-        delay(1500);
-        ESP.restart();
-    } else {
-        configServer.send(200, "text/html", "<h2>SSID empty! <a href='/'>Try again</a></h2>");
     }
+    if (view.length() > 0) prefs.putInt("view", view.toInt());
+    if (idle.length() > 0) prefs.putInt("idle", idle.toInt());
+
+    configServer.send(200, "text/html", "<h2>Saved! Restarting...</h2>");
+    delay(1500);
+    ESP.restart();
 }
 
 void startConfigPortal() {
@@ -355,6 +374,7 @@ void setup() {
     WIFI_SSID = prefs.getString("wifissid", "nayyar910");
     WIFI_PASS = prefs.getString("wifipass", "18067300");
     idleSeconds = prefs.getInt("idle", 300);
+    viewMode = prefs.getInt("view", 0);
 
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
@@ -395,6 +415,7 @@ void loop() {
             } else if (settingsIndex == 1) {
                 // Toggle view
                 viewMode = (viewMode + 1) % 2;
+                prefs.putInt("view", viewMode);
                 drawSettings();
             } else if (settingsIndex == 2) {
                 // Cycle idle timeout
@@ -464,6 +485,7 @@ void loop() {
         lastActivity = millis();
         if (!screenOff) {
             viewMode = (viewMode + 1) % 2;
+            prefs.putInt("view", viewMode);
             redraw();
             lastSwitch = millis();
             delay(300);
