@@ -5,8 +5,8 @@
 #include <Preferences.h>
 #include <time.h>
 
-String WIFI_SSID = "nayyar910";
-String WIFI_PASS = "18067300";
+String WIFI_SSID = "xxxxxx";
+String WIFI_PASS = "xxxxxxx";
 
 const char* SYMBOLS[] = {
     "AMZN", "AAPL", "BMY", "MARA", "NCNO",
