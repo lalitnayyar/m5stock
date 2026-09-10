@@ -30,6 +30,8 @@ struct Stock {
 
 String  symbols[MAX_SYMBOLS];
 Stock   stocks[MAX_SYMBOLS];
+float   qty[MAX_SYMBOLS];
+float   buy[MAX_SYMBOLS];
 int     symbolCount = 0;
 
 int     currentSymbol = 0;
@@ -53,6 +55,7 @@ unsigned long lastActivity = 0;
 bool    settingsMode = false;
 int     settingsIndex = 0;
 bool    showStatus = false;
+bool    showProfit = false;
 
 WiFiManager   wm;
 WebServer     server(80);
@@ -333,6 +336,8 @@ void saveConfigCallback() {
 }
 
 // ----- Preferences -----
+void loadPortfolio();
+
 void saveSymbols() {
     String list;
     for (int i = 0; i < symbolCount; i++) {
@@ -372,6 +377,29 @@ void loadSymbols() {
             symbolCount++;
         }
     }
+    loadPortfolio();
+}
+
+void keyFor(const char* prefix, const String& sym, char* out, int len) {
+    snprintf(out, len, "%s%s", prefix, sym.c_str());
+}
+
+void loadPortfolio() {
+    for (int i = 0; i < symbolCount; i++) {
+        char qk[16], bk[16];
+        keyFor("q_", symbols[i], qk, sizeof(qk));
+        keyFor("b_", symbols[i], bk, sizeof(bk));
+        qty[i] = prefs.getFloat(qk, 0.0f);
+        buy[i] = prefs.getFloat(bk, 0.0f);
+    }
+}
+
+void savePortfolioOne(const String& sym, float q, float b) {
+    char qk[16], bk[16];
+    keyFor("q_", sym, qk, sizeof(qk));
+    keyFor("b_", sym, bk, sizeof(bk));
+    prefs.putFloat(qk, q);
+    prefs.putFloat(bk, b);
 }
 
 void saveSettings() {
@@ -435,6 +463,13 @@ void handleRoot() {
         html += "%</td><td><a href='/api/remove?symbol=" + symbols[i] + "'>remove</a></td></tr>";
     }
     html += "</table>";
+
+    html += "<h2>Portfolio (qty / buy price)</h2>";
+    html += "<form action='/api/portfolio' method='POST' style='margin-bottom:12px'>";
+    html += "<input type='text' name='symbol' placeholder='SYMBOL' required>";
+    html += "<input type='number' step='any' name='qty' placeholder='Qty' required>";
+    html += "<input type='number' step='0.01' name='buy' placeholder='Buy price' required>";
+    html += "<button type='submit'>Save</button></form>";
 
     html += "<h2>Add stock</h2>";
     html += "<form action='/api/add' method='GET'>";
@@ -524,18 +559,37 @@ void handleSettings() {
     server.send(302, "text/plain", "");
 }
 
+void handlePortfolio() {
+    String sym = server.arg("symbol");
+    sym.toUpperCase();
+    sym.trim();
+    float q = server.arg("qty").toFloat();
+    float b = server.arg("buy").toFloat();
+    for (int i = 0; i < symbolCount; i++) {
+        if (symbols[i] == sym) {
+            qty[i] = q;
+            buy[i] = b;
+            savePortfolioOne(sym, q, b);
+            break;
+        }
+    }
+    server.sendHeader("Location", "/");
+    server.send(302, "text/plain", "");
+}
+
 void setupWeb() {
     server.on("/", handleRoot);
     server.on("/api/add",   handleAdd);
     server.on("/api/remove", handleRemove);
     server.on("/api/wifi",  handleWiFi);
     server.on("/api/settings", handleSettings);
+    server.on("/api/portfolio", handlePortfolio);
     server.begin();
 }
 
 // ----- On-device settings menu -----
-const char* menuLabels[] = {"View", "Bright", "Refresh", "Scroll", "Auto", "Idle", "Power Off", "Status", "Back"};
-const int MENU_ITEMS = 9;
+const char* menuLabels[] = {"View", "Bright", "Refresh", "Scroll", "Auto", "Idle", "Power Off", "Status", "P&L", "Back"};
+const int MENU_ITEMS = 10;
 
 int findIndex(int value, const int* arr, int n) {
     for (int i = 0; i < n; i++) if (arr[i] == value) return i;
@@ -565,7 +619,8 @@ void drawSettings() {
             case 5: val = idleSeconds == 0 ? "Off" : (String(idleSeconds) + "s"); break;
             case 6: val = "press B"; break;
             case 7: val = "press B"; break;
-            case 8: val = ""; break;
+            case 8: val = "press B"; break;
+            case 9: val = ""; break;
         }
         String line = String(menuLabels[i]) + (val.length() ? (": " + val) : "");
         StickCP2.Display.drawString(line.c_str(), 4, y);
@@ -574,6 +629,39 @@ void drawSettings() {
     StickCP2.Display.setTextColor(TFT_LIGHTGREY);
     StickCP2.Display.setTextFont(1);
     StickCP2.Display.drawString("A=next  B=change  A-hold=exit", 4, h - 12);
+}
+
+void drawProfit() {
+    int w = StickCP2.Display.width();
+    int h = StickCP2.Display.height();
+    StickCP2.Display.fillScreen(TFT_BLACK);
+    drawHeader(TFT_GREEN, " P&L");
+
+    float totalCost = 0.0f;
+    float totalValue = 0.0f;
+    for (int i = 0; i < symbolCount; i++) {
+        totalCost += qty[i] * buy[i];
+        if (stocks[i].valid) totalValue += qty[i] * stocks[i].price;
+    }
+    float pl = totalValue - totalCost;
+    float plPct = (totalCost > 0.0f) ? (pl / totalCost) * 100.0f : 0.0f;
+
+    String sCost  = "Cost:  " + fmtPrice(totalCost, 2);
+    String sValue = "Value: " + fmtPrice(totalValue, 2);
+    String sPL    = "P&L:   " + fmtSigned(pl, 2) + " (" + fmtSigned(plPct, 2) + "%)";
+
+    StickCP2.Display.setTextFont(2);
+    StickCP2.Display.setTextDatum(top_left);
+    int y = 24;
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.drawString(sCost.c_str(), 4, y); y += 20;
+    StickCP2.Display.drawString(sValue.c_str(), 4, y); y += 20;
+    StickCP2.Display.setTextColor(changeColor(pl));
+    StickCP2.Display.drawString(sPL.c_str(), 4, y); y += 22;
+
+    StickCP2.Display.setTextFont(1);
+    StickCP2.Display.setTextColor(TFT_LIGHTGREY);
+    StickCP2.Display.drawString("Press A/B or hold A", 4, h - 12);
 }
 
 void drawStatus() {
@@ -612,7 +700,7 @@ void settingsNext() {
 }
 
 void settingsChange() {
-    if (settingsIndex == 8) {
+    if (settingsIndex == 9) {
         settingsMode = false;
         saveSettings();
         StickCP2.Display.setBrightness(brightness);
@@ -629,6 +717,12 @@ void settingsChange() {
         showStatus = true;
         lastActivity = millis();
         drawStatus();
+        return;
+    }
+    if (settingsIndex == 8) {
+        showProfit = true;
+        lastActivity = millis();
+        drawProfit();
         return;
     }
     switch (settingsIndex) {
@@ -678,25 +772,35 @@ void setup() {
     loadSymbols();
     StickCP2.Display.fillScreen(TFT_BLACK);
 
-    showMessage("WiFi", "Trying nayyar910...");
-    delay(500);
-
     String ssid = prefs.getString("wifissid", DEFAULT_STA_SSID);
     String pass = prefs.getString("wifipass", DEFAULT_STA_PASSWORD);
+    if (ssid.length() == 0) ssid = DEFAULT_STA_SSID;
+    if (pass.length() == 0) pass = DEFAULT_STA_PASSWORD;
+
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), pass.c_str());
+    showMessage("WiFi", "Connecting...", ssid.c_str());
 
-    wm.setConnectTimeout(20);
-    wm.setConfigPortalTimeout(180);
-    wm.setAPCallback(configModeCallback);
-    wm.setSaveConfigCallback(saveConfigCallback);
-    wm.setDebugOutput(false);
+    unsigned long connStart = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - connStart) < 20000UL) {
+        delay(500);
+    }
 
-    bool connected = wm.autoConnect(AP_SSID, AP_PASSWORD);
-    if (!connected) {
-        showMessage("WiFi failed", "Restarting in 3s...");
-        delay(3000);
-        ESP.restart();
+    if (WiFi.status() != WL_CONNECTED) {
+        showMessage("WiFi", "Open AP", AP_SSID);
+        delay(1000);
+        wm.setConfigPortalTimeout(180);
+        wm.setAPCallback(configModeCallback);
+        wm.setSaveConfigCallback(saveConfigCallback);
+        wm.setDebugOutput(false);
+        if (!wm.startConfigPortal(AP_SSID, AP_PASSWORD)) {
+            showMessage("WiFi failed", "Restarting in 3s...");
+            delay(3000);
+            ESP.restart();
+        }
+        // remember portal-configured network
+        prefs.putString("wifissid", WiFi.SSID());
+        prefs.putString("wifipass", WiFi.psk());
     }
 
     showMessage("Connected", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
@@ -731,7 +835,13 @@ void loop() {
     stepRefresh();
 
     if (settingsMode) {
-        if (showStatus) {
+        if (showProfit) {
+            if (StickCP2.BtnA.wasPressed() || StickCP2.BtnB.wasPressed() || StickCP2.BtnA.wasHold()) {
+                showProfit = false;
+                lastActivity = millis();
+                drawSettings();
+            }
+        } else if (showStatus) {
             if (StickCP2.BtnA.wasPressed() || StickCP2.BtnB.wasPressed() || StickCP2.BtnA.wasHold()) {
                 showStatus = false;
                 lastActivity = millis();
