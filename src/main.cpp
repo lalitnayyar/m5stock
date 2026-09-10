@@ -271,12 +271,14 @@ void drawPortfolio(int i) {
     String rssi = (WiFi.status() == WL_CONNECTED) ? (String(WiFi.RSSI()) + "dBm") : "NO WIFI";
     StickCP2.Display.setTextDatum(top_right);
     StickCP2.Display.drawString(rssi.c_str(), w - 2, 2);
-    StickCP2.Display.setTextColor(TFT_WHITE);
-    StickCP2.Display.setTextFont(4);
-    StickCP2.Display.setTextDatum(middle_center);
-    StickCP2.Display.drawString(SYMBOLS[i], w / 2, 34);
 
-    int y = 66;
+    // Symbol (small)
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.setTextFont(2);
+    StickCP2.Display.setTextDatum(middle_center);
+    StickCP2.Display.drawString(SYMBOLS[i], w / 2, 26);
+
+    int y = 48;
     StickCP2.Display.setTextFont(1);
     StickCP2.Display.setTextDatum(top_left);
 
@@ -298,32 +300,23 @@ void drawPortfolio(int i) {
     float pl = value - cost;
     float plPct = ((prices[i] - buy[i]) / buy[i]) * 100.0f;
 
-    // Holding and Avg Buy
     char buf[64];
-    snprintf(buf, sizeof(buf), "Holding: %.3f", qty[i]);
     StickCP2.Display.setTextColor(TFT_WHITE);
-    StickCP2.Display.drawString(buf, 10, y);
-    y += 16;
-    snprintf(buf, sizeof(buf), "Avg Buy: $%.2f", buy[i]);
-    StickCP2.Display.drawString(buf, 10, y);
-    y += 16;
+    snprintf(buf, sizeof(buf), "Hold: %.3f @ $%.2f", qty[i], buy[i]);
+    StickCP2.Display.drawString(buf, 10, y); y += 12;
     snprintf(buf, sizeof(buf), "Current: $%.2f", prices[i]);
-    StickCP2.Display.drawString(buf, 10, y);
-    y += 16;
+    StickCP2.Display.drawString(buf, 10, y); y += 12;
     snprintf(buf, sizeof(buf), "Cost: $%.2f", cost);
-    StickCP2.Display.drawString(buf, 10, y);
-    y += 16;
+    StickCP2.Display.drawString(buf, 10, y); y += 12;
     snprintf(buf, sizeof(buf), "Value: $%.2f", value);
-    StickCP2.Display.drawString(buf, 10, y);
-    y += 20;
+    StickCP2.Display.drawString(buf, 10, y); y += 16;
 
-    // P&L - two lines
+    // P&L - two lines, larger font
     uint32_t plColor = pl >= 0.0f ? TFT_GREEN : TFT_RED;
     StickCP2.Display.setTextColor(plColor);
     StickCP2.Display.setTextFont(2);
     snprintf(buf, sizeof(buf), "P/L: $%.2f", pl);
-    StickCP2.Display.drawString(buf, 10, y);
-    y += 20;
+    StickCP2.Display.drawString(buf, 10, y); y += 18;
     snprintf(buf, sizeof(buf), "%.2f%%", plPct);
     StickCP2.Display.drawString(buf, 10, y);
 
