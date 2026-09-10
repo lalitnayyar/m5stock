@@ -3,6 +3,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include <time.h>
 
 String WIFI_SSID = "nayyar910";
 String WIFI_PASS = "18067300";
@@ -35,6 +36,22 @@ const unsigned long REFRESH_MS = 5UL * 60UL * 1000UL;
 const unsigned long SWITCH_MS = 6000UL;
 
 Preferences prefs;
+
+// ----- Time -----
+String getTimeStr() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo, 1000)) return "--:--";
+    char buf[16];
+    strftime(buf, sizeof(buf), "%H:%M", &timeinfo);
+    return String(buf);
+}
+
+void drawHeaderTime() {
+    StickCP2.Display.setTextDatum(top_center);
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.setTextFont(1);
+    StickCP2.Display.drawString(getTimeStr().c_str(), StickCP2.Display.width() / 2, 2);
+}
 
 // Global SSL client with small buffers to avoid heap corruption
 WiFiClientSecure gSecure;
@@ -117,6 +134,7 @@ void drawStock(int i) {
     String rssi = (WiFi.status() == WL_CONNECTED) ? (String(WiFi.RSSI()) + "dBm") : "NO WIFI";
     StickCP2.Display.setTextDatum(top_right);
     StickCP2.Display.drawString(rssi.c_str(), w - 2, 2);
+    drawHeaderTime();
 
     // Card border
     StickCP2.Display.drawRoundRect(2, 18, w - 4, h - 20, 4, theme);
@@ -174,6 +192,7 @@ void drawList() {
     String rssi = (WiFi.status() == WL_CONNECTED) ? (String(WiFi.RSSI()) + "dBm") : "NO WIFI";
     StickCP2.Display.setTextDatum(top_right);
     StickCP2.Display.drawString(rssi.c_str(), w - 2, 2);
+    drawHeaderTime();
 
     // Column headers
     StickCP2.Display.setTextDatum(top_left);
@@ -390,6 +409,11 @@ void setup() {
         delay(5000);
         ESP.restart();
     }
+
+    // Sync time (NYSE/Eastern)
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+    tzset();
 
     StickCP2.Display.drawString("Fetching prices...", StickCP2.Display.width() / 2, StickCP2.Display.height() / 2);
     refreshAll();
