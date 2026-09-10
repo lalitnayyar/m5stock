@@ -253,11 +253,20 @@ void redraw() {
 }
 
 // ----- Network -----
+WiFiClientSecure secureClient;
+HTTPClient http;
+
 void fetchStock(int i) {
     if (i < 0 || i >= symbolCount) return;
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
+    if (WiFi.status() != WL_CONNECTED) {
+        stocks[i].valid = false;
+        stocks[i].error = "No WiFi";
+        return;
+    }
+
+    // Reuse the secure client, but reset it each time
+    secureClient.stop();
+    secureClient.setInsecure();
 
     String url = "https://query1.finance.yahoo.com/v8/finance/chart/";
     url += symbols[i];
@@ -265,7 +274,12 @@ void fetchStock(int i) {
 
     http.setTimeout(REQUEST_TIMEOUT_MS);
     http.useHTTP10(true);
-    http.begin(client, url);
+    http.setConnectTimeout(8000);
+    if (!http.begin(secureClient, url)) {
+        stocks[i].valid = false;
+        stocks[i].error = "Begin fail";
+        return;
+    }
     http.addHeader("User-Agent", YAHOO_USER_AGENT);
 
     int code = http.GET();
@@ -304,18 +318,19 @@ void fetchStock(int i) {
         stocks[i].error = "HTTP " + String(code);
     }
     http.end();
+    yield();
 }
 
 void startRefresh() {
     refreshActive = true;
     refreshIndex = 0;
     refreshLast = 0;
-    showMessage("Updating prices", "Please wait...");
+    // Don't overwrite the screen - fetch in background
 }
 
 void stepRefresh() {
     if (!refreshActive) return;
-    if (millis() - refreshLast < 250) return;
+    if (millis() - refreshLast < 500) return;
     fetchStock(refreshIndex);
     refreshIndex++;
     refreshLast = millis();
@@ -814,8 +829,8 @@ void setup() {
     tzset();
 
     setupWeb();
-    showMessage("Updating", "Fetching stocks...");
     startRefresh();
+    redraw();
     lastDisplaySwitch = millis();
     lastActivity = millis();
 }
