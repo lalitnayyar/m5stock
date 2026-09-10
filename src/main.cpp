@@ -38,6 +38,7 @@ int     viewMode = 0;        // 0 card, 1 list
 int     brightness = 80;
 int     refreshMinutes = 5;
 int     scrollSeconds = 6;
+int     idleSeconds = 30;
 bool    autoScroll = true;
 
 unsigned long lastRefresh = 0;
@@ -46,6 +47,8 @@ bool          refreshActive = false;
 int           refreshIndex = 0;
 unsigned long refreshLast = 0;
 
+bool    screenOff = false;
+unsigned long lastActivity = 0;
 bool    settingsMode = false;
 int     settingsIndex = 0;
 
@@ -69,6 +72,7 @@ String fmtSigned(float v, int decimals = 2) {
 // ----- Display -----
 void showMessage(const char* title, const char* line1,
                  const char* line2 = nullptr, const char* line3 = nullptr) {
+    if (screenOff) return;
     int w = StickCP2.Display.width();
     int h = StickCP2.Display.height();
     StickCP2.Display.fillScreen(TFT_BLACK);
@@ -238,6 +242,7 @@ void drawList() {
 }
 
 void redraw() {
+    if (screenOff) return;
     if (viewMode == 0) drawCard(currentSymbol);
     else               drawList();
 }
@@ -372,6 +377,7 @@ void saveSettings() {
     prefs.putInt("bright", brightness);
     prefs.putInt("refresh", refreshMinutes);
     prefs.putInt("scroll", scrollSeconds);
+    prefs.putInt("idle", idleSeconds);
     prefs.putBool("auto", autoScroll);
 }
 
@@ -380,6 +386,7 @@ void loadSettings() {
     brightness = prefs.getInt("bright", 80);
     refreshMinutes = prefs.getInt("refresh", 5);
     scrollSeconds = prefs.getInt("scroll", 6);
+    idleSeconds = prefs.getInt("idle", 30);
     autoScroll = prefs.getBool("auto", true);
     // persist defaults on first boot
     saveSettings();
@@ -445,6 +452,7 @@ void handleRoot() {
     html += "Brightness: <input type='number' name='bright' min='10' max='100' value='" + String(brightness) + "'><br>";
     html += "Refresh (min): <input type='number' name='refresh' min='1' max='60' value='" + String(refreshMinutes) + "'><br>";
     html += "Scroll (sec): <input type='number' name='scroll' min='0' max='60' value='" + String(scrollSeconds) + "'><br>";
+    html += "Idle (sec, 0=off): <input type='number' name='idle' min='0' max='3600' value='" + String(idleSeconds) + "'><br>";
     html += "Auto scroll: <input type='checkbox' name='auto' value='1'" + String(autoScroll ? " checked" : "") + "><br>";
     html += "<button type='submit'>Save</button></form>";
 
@@ -505,6 +513,7 @@ void handleSettings() {
     if (server.hasArg("bright")) brightness = constrain(server.arg("bright").toInt(), 10, 100);
     if (server.hasArg("refresh")) refreshMinutes = constrain(server.arg("refresh").toInt(), 1, 60);
     if (server.hasArg("scroll")) scrollSeconds = constrain(server.arg("scroll").toInt(), 0, 60);
+    if (server.hasArg("idle")) idleSeconds = constrain(server.arg("idle").toInt(), 0, 3600);
     autoScroll = server.hasArg("auto");
     saveSettings();
     StickCP2.Display.setBrightness(brightness);
@@ -523,8 +532,8 @@ void setupWeb() {
 }
 
 // ----- On-device settings menu -----
-const char* menuLabels[] = {"View", "Bright", "Refresh", "Scroll", "Auto", "Back"};
-const int MENU_ITEMS = 6;
+const char* menuLabels[] = {"View", "Bright", "Refresh", "Scroll", "Auto", "Idle", "Power Off", "Back"};
+const int MENU_ITEMS = 8;
 
 int findIndex(int value, const int* arr, int n) {
     for (int i = 0; i < n; i++) if (arr[i] == value) return i;
@@ -551,7 +560,9 @@ void drawSettings() {
             case 2: val = String(refreshMinutes) + "m"; break;
             case 3: val = String(scrollSeconds) + "s"; break;
             case 4: val = autoScroll ? "On" : "Off"; break;
-            case 5: val = ""; break;
+            case 5: val = idleSeconds == 0 ? "Off" : (String(idleSeconds) + "s"); break;
+            case 6: val = "press B"; break;
+            case 7: val = ""; break;
         }
         String line = String(menuLabels[i]) + (val.length() ? (": " + val) : "");
         StickCP2.Display.drawString(line.c_str(), 4, y);
@@ -568,11 +579,17 @@ void settingsNext() {
 }
 
 void settingsChange() {
-    if (settingsIndex == 5) {
+    if (settingsIndex == 7) {
         settingsMode = false;
         saveSettings();
         StickCP2.Display.setBrightness(brightness);
         redraw();
+        return;
+    }
+    if (settingsIndex == 6) {
+        showMessage("Power off", "Press power to wake");
+        delay(1000);
+        M5.Power.powerOff();
         return;
     }
     switch (settingsIndex) {
@@ -598,6 +615,12 @@ void settingsChange() {
         }
         case 4: {
             autoScroll = !autoScroll;
+            break;
+        }
+        case 5: {
+            static const int idles[] = {0, 10, 30, 60, 120, 300};
+            idleSeconds = idles[(findIndex(idleSeconds, idles, 6) + 1) % 6];
+            lastActivity = millis();
             break;
         }
     }
@@ -644,10 +667,22 @@ void setup() {
     showMessage("Updating", "Fetching stocks...");
     startRefresh();
     lastDisplaySwitch = millis();
+    lastActivity = millis();
 }
 
 void loop() {
     StickCP2.update();
+
+    // Wake from idle on any button
+    if (StickCP2.BtnA.isPressed() || StickCP2.BtnB.isPressed()) {
+        lastActivity = millis();
+        if (screenOff) {
+            screenOff = false;
+            StickCP2.Display.setBrightness(brightness);
+            redraw();
+        }
+    }
+
     server.handleClient();
     stepRefresh();
 
@@ -705,6 +740,13 @@ void loop() {
     // Auto-refresh
     if (!refreshActive && (millis() - lastRefresh >= (unsigned long)refreshMinutes * 60000UL)) {
         startRefresh();
+    }
+
+    // Idle screen timeout
+    if (!screenOff && idleSeconds > 0 &&
+        (millis() - lastActivity >= (unsigned long)idleSeconds * 1000UL)) {
+        screenOff = true;
+        StickCP2.Display.setBrightness(0);
     }
 
     delay(20);
