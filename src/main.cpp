@@ -17,6 +17,7 @@ float changes[NUM_SYMBOLS];
 bool  valid[NUM_SYMBOLS];
 
 int currentSymbol = 0;
+int listOffset = 0;  // scroll offset for list view
 int viewMode = 0;  // 0 = card, 1 = list
 unsigned long lastRefresh = 0;
 unsigned long lastSwitch = 0;
@@ -169,29 +170,48 @@ void drawList() {
     StickCP2.Display.drawString("PRICE", 80, 20);
     StickCP2.Display.drawString("CHG%", 160, 20);
 
-    // Stock rows
+    // Stock rows - only show what fits on screen, with scroll
     int y = 36;
     int rowH = 16;
-    for (int i = 0; i < NUM_SYMBOLS; i++) {
-        StickCP2.Display.setTextColor(i == currentSymbol ? TFT_CYAN : TFT_WHITE);
-        StickCP2.Display.drawString(SYMBOLS[i], 4, y);
+    int availH = h - 36;
+    int visibleRows = availH / rowH;
 
-        if (valid[i]) {
+    // Adjust scroll offset to keep currentSymbol visible
+    if (currentSymbol < listOffset) listOffset = currentSymbol;
+    if (currentSymbol >= listOffset + visibleRows) listOffset = currentSymbol - visibleRows + 1;
+    if (listOffset < 0) listOffset = 0;
+    if (listOffset > NUM_SYMBOLS - visibleRows) listOffset = NUM_SYMBOLS - visibleRows;
+    if (listOffset < 0) listOffset = 0;
+
+    for (int idx = listOffset; idx < listOffset + visibleRows && idx < NUM_SYMBOLS; idx++) {
+        StickCP2.Display.setTextColor(idx == currentSymbol ? TFT_CYAN : TFT_WHITE);
+        StickCP2.Display.drawString(SYMBOLS[idx], 4, y);
+
+        if (valid[idx]) {
             StickCP2.Display.setTextColor(TFT_WHITE);
             char priceBuf[16];
-            snprintf(priceBuf, sizeof(priceBuf), "%.2f", prices[i]);
+            snprintf(priceBuf, sizeof(priceBuf), "%.2f", prices[idx]);
             StickCP2.Display.drawString(priceBuf, 80, y);
 
-            uint32_t c = changes[i] >= 0 ? TFT_GREEN : TFT_RED;
+            uint32_t c = changes[idx] >= 0 ? TFT_GREEN : TFT_RED;
             StickCP2.Display.setTextColor(c);
             char chgBuf[16];
-            snprintf(chgBuf, sizeof(chgBuf), "%+.2f%%", changes[i]);
+            snprintf(chgBuf, sizeof(chgBuf), "%+.2f%%", changes[idx]);
             StickCP2.Display.drawString(chgBuf, 160, y);
         } else {
             StickCP2.Display.setTextColor(TFT_RED);
             StickCP2.Display.drawString("--", 80, y);
         }
         y += rowH;
+    }
+
+    // Scroll indicator
+    if (NUM_SYMBOLS > visibleRows) {
+        int barH = h - 36;
+        int thumbH = barH * visibleRows / NUM_SYMBOLS;
+        int thumbY = 36 + barH * listOffset / NUM_SYMBOLS;
+        StickCP2.Display.fillRect(w - 3, 36, 2, barH, TFT_DARKGREY);
+        StickCP2.Display.fillRect(w - 3, thumbY, 2, thumbH, TFT_CYAN);
     }
 }
 
