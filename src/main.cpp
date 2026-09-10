@@ -1,5 +1,6 @@
 #include <M5StickCPlus2.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 
 const char* WIFI_SSID = "nayyar910";
@@ -16,30 +17,42 @@ float changes[NUM_SYMBOLS];
 bool  valid[NUM_SYMBOLS];
 
 int currentSymbol = 0;
+int viewMode = 0;  // 0 = card, 1 = list
 unsigned long lastRefresh = 0;
 unsigned long lastSwitch = 0;
 const unsigned long REFRESH_MS = 5UL * 60UL * 1000UL;
 const unsigned long SWITCH_MS = 6000UL;
 
+// Global SSL client with small buffers to avoid heap corruption
+WiFiClientSecure gSecure;
+
 void fetchStock(int i) {
-    String url = "http://query1.finance.yahoo.com/v8/finance/chart/";
+    String url = "https://query1.finance.yahoo.com/v8/finance/chart/";
     url += SYMBOLS[i];
     url += "?interval=1d&range=1d";
 
+    gSecure.stop();
+    gSecure.setInsecure();
+
     HTTPClient http;
+    http.setReuse(false);
     http.setTimeout(10000);
-    http.begin(url);
+    http.setConnectTimeout(8000);
+    http.begin(gSecure, url);
     http.addHeader("User-Agent", "Mozilla/5.0");
 
     int code = http.GET();
+    Serial.printf("Fetch %s: HTTP %d\n", SYMBOLS[i], code);
     if (code != 200) {
         valid[i] = false;
         http.end();
+        delay(100);
         return;
     }
 
     String body = http.getString();
     http.end();
+    delay(100);
 
     int pIdx = body.indexOf("\"regularMarketPrice\":");
     int cIdx = body.indexOf("\"chartPreviousClose\":");
@@ -59,15 +72,17 @@ void fetchStock(int i) {
         prices[i] = price;
         changes[i] = ((price - prev) / prev) * 100.0f;
         valid[i] = true;
+        Serial.printf("  %s: $%.2f (%.2f%%)\n", SYMBOLS[i], price, changes[i]);
     } else {
         valid[i] = false;
+        Serial.println("  parse failed");
     }
 }
 
 void refreshAll() {
     for (int i = 0; i < NUM_SYMBOLS; i++) {
         fetchStock(i);
-        delay(200);
+        delay(300);
     }
     lastRefresh = millis();
 }
@@ -132,9 +147,63 @@ void drawStock(int i) {
     }
 }
 
+void drawList() {
+    int w = StickCP2.Display.width();
+    int h = StickCP2.Display.height();
+    StickCP2.Display.fillScreen(TFT_BLACK);
+
+    // Header
+    StickCP2.Display.fillRect(0, 0, w, 16, TFT_BLUE);
+    StickCP2.Display.setTextFont(1);
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.setTextDatum(top_left);
+    StickCP2.Display.drawString(" M5 STOCKS", 4, 2);
+    String rssi = (WiFi.status() == WL_CONNECTED) ? (String(WiFi.RSSI()) + "dBm") : "NO WIFI";
+    StickCP2.Display.setTextDatum(top_right);
+    StickCP2.Display.drawString(rssi.c_str(), w - 2, 2);
+
+    // Column headers
+    StickCP2.Display.setTextDatum(top_left);
+    StickCP2.Display.setTextColor(TFT_ORANGE);
+    StickCP2.Display.drawString("SYM", 4, 20);
+    StickCP2.Display.drawString("PRICE", 80, 20);
+    StickCP2.Display.drawString("CHG%", 160, 20);
+
+    // Stock rows
+    int y = 36;
+    int rowH = 16;
+    for (int i = 0; i < NUM_SYMBOLS; i++) {
+        StickCP2.Display.setTextColor(i == currentSymbol ? TFT_CYAN : TFT_WHITE);
+        StickCP2.Display.drawString(SYMBOLS[i], 4, y);
+
+        if (valid[i]) {
+            StickCP2.Display.setTextColor(TFT_WHITE);
+            char priceBuf[16];
+            snprintf(priceBuf, sizeof(priceBuf), "%.2f", prices[i]);
+            StickCP2.Display.drawString(priceBuf, 80, y);
+
+            uint32_t c = changes[i] >= 0 ? TFT_GREEN : TFT_RED;
+            StickCP2.Display.setTextColor(c);
+            char chgBuf[16];
+            snprintf(chgBuf, sizeof(chgBuf), "%+.2f%%", changes[i]);
+            StickCP2.Display.drawString(chgBuf, 160, y);
+        } else {
+            StickCP2.Display.setTextColor(TFT_RED);
+            StickCP2.Display.drawString("--", 80, y);
+        }
+        y += rowH;
+    }
+}
+
+void redraw() {
+    if (viewMode == 0) drawStock(currentSymbol);
+    else               drawList();
+}
+
 void setup() {
     auto cfg = M5.config();
     StickCP2.begin(cfg);
+    Serial.begin(115200);
     StickCP2.Display.setRotation(1);
     StickCP2.Display.fillScreen(TFT_BLACK);
 
@@ -158,39 +227,48 @@ void setup() {
         ESP.restart();
     }
 
+    StickCP2.Display.drawString("Fetching prices...", StickCP2.Display.width() / 2, StickCP2.Display.height() / 2);
     refreshAll();
-    drawStock(currentSymbol);
+    redraw();
     lastSwitch = millis();
 }
 
 void loop() {
     StickCP2.update();
 
-    // Button A = next stock
+    // Button A = next stock (or scroll in list)
     if (StickCP2.BtnA.wasPressed()) {
         currentSymbol = (currentSymbol + 1) % NUM_SYMBOLS;
-        drawStock(currentSymbol);
+        redraw();
         lastSwitch = millis();
     }
 
-    // Button B = previous stock
+    // Button B = previous stock (or toggle view on hold)
     if (StickCP2.BtnB.wasPressed()) {
         currentSymbol = (currentSymbol + NUM_SYMBOLS - 1) % NUM_SYMBOLS;
-        drawStock(currentSymbol);
+        redraw();
         lastSwitch = millis();
     }
 
-    // Auto-rotate every 6 seconds
-    if (millis() - lastSwitch >= SWITCH_MS) {
+    // Hold Button A to toggle card/list view
+    if (StickCP2.BtnA.wasHold()) {
+        viewMode = (viewMode + 1) % 2;
+        redraw();
+        lastSwitch = millis();
+        delay(300);
+    }
+
+    // Auto-rotate every 6 seconds (card view only)
+    if (viewMode == 0 && millis() - lastSwitch >= SWITCH_MS) {
         currentSymbol = (currentSymbol + 1) % NUM_SYMBOLS;
-        drawStock(currentSymbol);
+        redraw();
         lastSwitch = millis();
     }
 
     // Refresh prices every 5 minutes
     if (millis() - lastRefresh >= REFRESH_MS) {
         refreshAll();
-        drawStock(currentSymbol);
+        redraw();
     }
 
     delay(50);
