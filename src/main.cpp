@@ -22,8 +22,13 @@ int listOffset = 0;  // scroll offset for list view
 int viewMode = 0;  // 0 = card, 1 = list
 bool settingsMode = false;
 int settingsIndex = 0;
-const char* menuLabels[] = {"Change WiFi", "View: Card/List", "Back"};
-const int MENU_ITEMS = 3;
+int idleSeconds = 300;  // idle timeout (5 min default), 0 = disabled
+bool screenOff = false;
+unsigned long lastActivity = 0;
+const char* menuLabels[] = {"Change WiFi", "View: Card/List", "Idle Timeout", "Back"};
+const int MENU_ITEMS = 4;
+const int IDLE_OPTIONS[] = {0, 60, 120, 300, 600, 1800};
+const int NUM_IDLE_OPTIONS = 6;
 unsigned long lastRefresh = 0;
 unsigned long lastSwitch = 0;
 const unsigned long REFRESH_MS = 5UL * 60UL * 1000UL;
@@ -239,6 +244,11 @@ void drawSettings() {
         if (i == settingsIndex) StickCP2.Display.fillRect(0, y, w, 20, TFT_CYAN);
         String line = menuLabels[i];
         if (i == 1) line += viewMode == 0 ? " (Card)" : " (List)";
+        if (i == 2) {
+            if (idleSeconds == 0) line += ": Off";
+            else if (idleSeconds < 60) line += ": " + String(idleSeconds) + "s";
+            else line += ": " + String(idleSeconds / 60) + "m";
+        }
         StickCP2.Display.drawString(line.c_str(), 4, y);
         y += 22;
     }
@@ -344,6 +354,7 @@ void setup() {
     prefs.begin("m5stock", false);
     WIFI_SSID = prefs.getString("wifissid", "nayyar910");
     WIFI_PASS = prefs.getString("wifipass", "18067300");
+    idleSeconds = prefs.getInt("idle", 300);
 
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
@@ -364,6 +375,7 @@ void setup() {
     refreshAll();
     redraw();
     lastSwitch = millis();
+    lastActivity = millis();
 }
 
 void loop() {
@@ -385,6 +397,15 @@ void loop() {
                 viewMode = (viewMode + 1) % 2;
                 drawSettings();
             } else if (settingsIndex == 2) {
+                // Cycle idle timeout
+                int curIdx = 0;
+                for (int j = 0; j < NUM_IDLE_OPTIONS; j++) {
+                    if (IDLE_OPTIONS[j] == idleSeconds) { curIdx = j; break; }
+                }
+                idleSeconds = IDLE_OPTIONS[(curIdx + 1) % NUM_IDLE_OPTIONS];
+                prefs.putInt("idle", idleSeconds);
+                drawSettings();
+            } else if (settingsIndex == 3) {
                 // Back
                 settingsMode = false;
                 redraw();
@@ -401,45 +422,72 @@ void loop() {
 
     // Button A = next stock
     if (StickCP2.BtnA.wasPressed()) {
-        currentSymbol = (currentSymbol + 1) % NUM_SYMBOLS;
-        redraw();
-        lastSwitch = millis();
+        lastActivity = millis();
+        if (screenOff) {
+            screenOff = false;
+            StickCP2.Display.setBrightness(80);
+            redraw();
+        } else {
+            currentSymbol = (currentSymbol + 1) % NUM_SYMBOLS;
+            redraw();
+            lastSwitch = millis();
+        }
     }
 
     // Button B = previous stock
     if (StickCP2.BtnB.wasPressed()) {
-        currentSymbol = (currentSymbol + NUM_SYMBOLS - 1) % NUM_SYMBOLS;
-        redraw();
-        lastSwitch = millis();
+        lastActivity = millis();
+        if (screenOff) {
+            screenOff = false;
+            StickCP2.Display.setBrightness(80);
+            redraw();
+        } else {
+            currentSymbol = (currentSymbol + NUM_SYMBOLS - 1) % NUM_SYMBOLS;
+            redraw();
+            lastSwitch = millis();
+        }
     }
 
     // Hold Button A = settings menu
     if (StickCP2.BtnA.wasHold()) {
-        settingsMode = true;
-        settingsIndex = 0;
-        drawSettings();
-        delay(300);
+        lastActivity = millis();
+        if (!screenOff) {
+            settingsMode = true;
+            settingsIndex = 0;
+            drawSettings();
+            delay(300);
+        }
     }
 
     // Hold Button B to toggle card/list view
     if (StickCP2.BtnB.wasHold()) {
-        viewMode = (viewMode + 1) % 2;
-        redraw();
-        lastSwitch = millis();
-        delay(300);
+        lastActivity = millis();
+        if (!screenOff) {
+            viewMode = (viewMode + 1) % 2;
+            redraw();
+            lastSwitch = millis();
+            delay(300);
+        }
     }
 
     // Auto-rotate every 6 seconds (card view only)
-    if (viewMode == 0 && millis() - lastSwitch >= SWITCH_MS) {
+    if (!screenOff && viewMode == 0 && millis() - lastSwitch >= SWITCH_MS) {
         currentSymbol = (currentSymbol + 1) % NUM_SYMBOLS;
         redraw();
         lastSwitch = millis();
+    }
+
+    // Idle screen timeout
+    if (!screenOff && idleSeconds > 0 &&
+        (millis() - lastActivity >= (unsigned long)idleSeconds * 1000UL)) {
+        screenOff = true;
+        StickCP2.Display.setBrightness(0);
     }
 
     // Refresh prices every 5 minutes
     if (millis() - lastRefresh >= REFRESH_MS) {
         refreshAll();
-        redraw();
+        if (!screenOff) redraw();
     }
 
     delay(50);
