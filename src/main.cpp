@@ -828,7 +828,8 @@ void setup() {
     setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
     tzset();
 
-    setupWeb();
+    // HTTP web server disabled to save memory and prevent crashes
+    // setupWeb();
     startRefresh();
     redraw();
     lastDisplaySwitch = millis();
@@ -848,7 +849,8 @@ void loop() {
         }
     }
 
-    server.handleClient();
+    // HTTP web server disabled to save memory and prevent crashes
+    // server.handleClient();
     stepRefresh();
 
     if (settingsMode) {
