@@ -2,9 +2,10 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <Preferences.h>
 
-const char* WIFI_SSID = "nayyar910";
-const char* WIFI_PASS = "18067300";
+String WIFI_SSID = "nayyar910";
+String WIFI_PASS = "18067300";
 
 const char* SYMBOLS[] = {
     "AMZN", "AAPL", "BMY", "MARA", "NCNO",
@@ -19,10 +20,16 @@ bool  valid[NUM_SYMBOLS];
 int currentSymbol = 0;
 int listOffset = 0;  // scroll offset for list view
 int viewMode = 0;  // 0 = card, 1 = list
+bool settingsMode = false;
+int settingsIndex = 0;
+const char* menuLabels[] = {"Change WiFi", "View: Card/List", "Back"};
+const int MENU_ITEMS = 3;
 unsigned long lastRefresh = 0;
 unsigned long lastSwitch = 0;
 const unsigned long REFRESH_MS = 5UL * 60UL * 1000UL;
 const unsigned long SWITCH_MS = 6000UL;
+
+Preferences prefs;
 
 // Global SSL client with small buffers to avoid heap corruption
 WiFiClientSecure gSecure;
@@ -215,9 +222,111 @@ void drawList() {
     }
 }
 
+void drawSettings() {
+    int w = StickCP2.Display.width();
+    int h = StickCP2.Display.height();
+    StickCP2.Display.fillScreen(TFT_BLACK);
+    StickCP2.Display.fillRect(0, 0, w, 16, TFT_ORANGE);
+    StickCP2.Display.setTextFont(1);
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.setTextDatum(top_left);
+    StickCP2.Display.drawString(" SETTINGS", 4, 2);
+
+    int y = 24;
+    StickCP2.Display.setTextFont(2);
+    for (int i = 0; i < MENU_ITEMS; i++) {
+        StickCP2.Display.setTextColor(i == settingsIndex ? TFT_BLACK : TFT_WHITE);
+        if (i == settingsIndex) StickCP2.Display.fillRect(0, y, w, 20, TFT_CYAN);
+        String line = menuLabels[i];
+        if (i == 1) line += viewMode == 0 ? " (Card)" : " (List)";
+        StickCP2.Display.drawString(line.c_str(), 4, y);
+        y += 22;
+    }
+    StickCP2.Display.setTextColor(TFT_LIGHTGREY);
+    StickCP2.Display.setTextFont(1);
+    StickCP2.Display.drawString("A=next B=select HoldA=back", 4, h - 12);
+}
+
 void redraw() {
-    if (viewMode == 0) drawStock(currentSymbol);
-    else               drawList();
+    if (settingsMode) drawSettings();
+    else if (viewMode == 0) drawStock(currentSymbol);
+    else                    drawList();
+}
+
+// ----- WiFi change via simple AP + web form -----
+#include <WebServer.h>
+WebServer configServer(80);
+bool configPortalActive = false;
+
+void handleConfigRoot() {
+    String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    html += "<title>M5 WiFi Setup</title></head><body style='font-family:sans-serif;margin:20px'>";
+    html += "<h2>M5 Stock Ticker - WiFi Setup</h2>";
+    html += "<form action='/save' method='post'>";
+    html += "<p>SSID: <input name='ssid' length='32' style='font-size:16px;padding:5px'></p>";
+    html += "<p>Password: <input name='pass' length='64' type='password' style='font-size:16px;padding:5px'></p>";
+    html += "<p><button type='submit' style='font-size:16px;padding:8px 20px'>Save & Restart</button></p>";
+    html += "</form></body></html>";
+    configServer.send(200, "text/html", html);
+}
+
+void handleConfigSave() {
+    String ssid = configServer.arg("ssid");
+    String pass = configServer.arg("pass");
+    if (ssid.length() > 0) {
+        prefs.putString("wifissid", ssid);
+        prefs.putString("wifipass", pass);
+        configServer.send(200, "text/html", "<h2>Saved! Restarting...</h2>");
+        delay(1500);
+        ESP.restart();
+    } else {
+        configServer.send(200, "text/html", "<h2>SSID empty! <a href='/'>Try again</a></h2>");
+    }
+}
+
+void startConfigPortal() {
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("M5-StockTicker", "18067300");
+
+    configServer.on("/", handleConfigRoot);
+    configServer.on("/save", HTTP_POST, handleConfigSave);
+    configServer.begin();
+
+    StickCP2.Display.fillScreen(TFT_BLACK);
+    StickCP2.Display.fillRect(0, 0, 240, 16, TFT_PURPLE);
+    StickCP2.Display.setTextFont(1);
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.setTextDatum(top_left);
+    StickCP2.Display.drawString(" WiFi Setup", 4, 2);
+    StickCP2.Display.setTextFont(2);
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.setTextDatum(top_left);
+    StickCP2.Display.drawString("1. Connect phone to:", 4, 24);
+    StickCP2.Display.setTextColor(TFT_CYAN);
+    StickCP2.Display.drawString("M5-StockTicker", 4, 44);
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.drawString("Pass: 18067300", 4, 64);
+    StickCP2.Display.drawString("2. Open browser:", 4, 84);
+    StickCP2.Display.setTextColor(TFT_CYAN);
+    StickCP2.Display.drawString("192.168.4.1", 4, 104);
+    StickCP2.Display.setTextColor(TFT_LIGHTGREY);
+    StickCP2.Display.setTextFont(1);
+    StickCP2.Display.drawString("Hold A to cancel", 4, 130);
+
+    configPortalActive = true;
+    while (configPortalActive) {
+        configServer.handleClient();
+        StickCP2.update();
+        if (StickCP2.BtnA.wasHold()) {
+            configPortalActive = false;
+            configServer.stop();
+            WiFi.softAPdisconnect(true);
+            WiFi.mode(WIFI_STA);
+            delay(500);
+            ESP.restart();
+        }
+        delay(10);
+    }
 }
 
 void setup() {
@@ -232,9 +341,13 @@ void setup() {
     StickCP2.Display.setTextDatum(middle_center);
     StickCP2.Display.drawString("Connecting WiFi...", StickCP2.Display.width() / 2, StickCP2.Display.height() / 2);
 
+    prefs.begin("m5stock", false);
+    WIFI_SSID = prefs.getString("wifissid", "nayyar910");
+    WIFI_PASS = prefs.getString("wifipass", "18067300");
+
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    WiFi.begin(WIFI_SSID.c_str(), WIFI_PASS.c_str());
 
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - start) < 20000UL) {
@@ -256,7 +369,37 @@ void setup() {
 void loop() {
     StickCP2.update();
 
-    // Button A = next stock (or scroll in list)
+    if (settingsMode) {
+        // Settings menu navigation
+        if (StickCP2.BtnA.wasPressed()) {
+            settingsIndex = (settingsIndex + 1) % MENU_ITEMS;
+            drawSettings();
+        }
+        if (StickCP2.BtnB.wasPressed()) {
+            // Action on selected item
+            if (settingsIndex == 0) {
+                // Change WiFi
+                startConfigPortal();
+            } else if (settingsIndex == 1) {
+                // Toggle view
+                viewMode = (viewMode + 1) % 2;
+                drawSettings();
+            } else if (settingsIndex == 2) {
+                // Back
+                settingsMode = false;
+                redraw();
+            }
+        }
+        if (StickCP2.BtnA.wasHold()) {
+            settingsMode = false;
+            redraw();
+            delay(300);
+        }
+        delay(50);
+        return;
+    }
+
+    // Button A = next stock
     if (StickCP2.BtnA.wasPressed()) {
         currentSymbol = (currentSymbol + 1) % NUM_SYMBOLS;
         redraw();
@@ -268,6 +411,14 @@ void loop() {
         currentSymbol = (currentSymbol + NUM_SYMBOLS - 1) % NUM_SYMBOLS;
         redraw();
         lastSwitch = millis();
+    }
+
+    // Hold Button A = settings menu
+    if (StickCP2.BtnA.wasHold()) {
+        settingsMode = true;
+        settingsIndex = 0;
+        drawSettings();
+        delay(300);
     }
 
     // Hold Button B to toggle card/list view
