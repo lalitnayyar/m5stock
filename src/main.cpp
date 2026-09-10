@@ -778,6 +778,8 @@ void setup() {
     if (pass.length() == 0) pass = DEFAULT_STA_PASSWORD;
 
     WiFi.mode(WIFI_STA);
+    WiFi.persistent(true);
+    WiFi.setAutoReconnect(true);
     WiFi.begin(ssid.c_str(), pass.c_str());
     showMessage("WiFi", "Connecting...", ssid.c_str());
 
@@ -902,6 +904,15 @@ void loop() {
     // Auto-refresh
     if (!refreshActive && (millis() - lastRefresh >= (unsigned long)refreshMinutes * 60000UL)) {
         startRefresh();
+    }
+
+    // Reconnect WiFi if dropped
+    static unsigned long lastWifiCheck = 0;
+    if (millis() - lastWifiCheck >= 5000UL) {
+        lastWifiCheck = millis();
+        if (WiFi.status() != WL_CONNECTED) {
+            WiFi.reconnect();
+        }
     }
 
     // Idle screen timeout
