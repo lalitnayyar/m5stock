@@ -17,10 +17,12 @@ const int NUM_SYMBOLS = 9;
 float prices[NUM_SYMBOLS];
 float changes[NUM_SYMBOLS];
 bool  valid[NUM_SYMBOLS];
+float qty[NUM_SYMBOLS];
+float buy[NUM_SYMBOLS];
 
 int currentSymbol = 0;
 int listOffset = 0;  // scroll offset for list view
-int viewMode = 0;  // 0 = card, 1 = list
+int viewMode = 0;  // 0 = card, 1 = list, 2 = portfolio
 bool settingsMode = false;
 int settingsIndex = 0;
 int idleSeconds = 300;  // idle timeout (5 min default), 0 = disabled
@@ -246,6 +248,77 @@ void drawList() {
     }
 }
 
+void drawPortfolio(int i) {
+    int w = StickCP2.Display.width();
+    int h = StickCP2.Display.height();
+    StickCP2.Display.fillScreen(TFT_BLACK);
+
+    // Header bar (use P&L color or neutral)
+    uint32_t theme = TFT_ORANGE;
+    if (valid[i] && qty[i] > 0.0f && buy[i] > 0.0f) {
+        float cost = qty[i] * buy[i];
+        float value = qty[i] * prices[i];
+        float pl = value - cost;
+        theme = pl >= 0.0f ? TFT_GREEN : TFT_RED;
+    }
+    StickCP2.Display.fillRect(0, 0, w, 16, theme);
+    StickCP2.Display.setTextFont(1);
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.setTextDatum(top_left);
+    StickCP2.Display.drawString(" M5 STOCKS", 4, 2);
+    drawHeaderTime();
+
+    String rssi = (WiFi.status() == WL_CONNECTED) ? (String(WiFi.RSSI()) + "dBm") : "NO WIFI";
+    StickCP2.Display.setTextDatum(top_right);
+    StickCP2.Display.drawString(rssi.c_str(), w - 2, 2);
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.setTextFont(4);
+    StickCP2.Display.setTextDatum(middle_center);
+    StickCP2.Display.drawString(SYMBOLS[i], w / 2, 34);
+
+    int y = 70;
+    StickCP2.Display.setTextFont(2);
+    StickCP2.Display.setTextDatum(top_left);
+
+    if (qty[i] <= 0.0f || buy[i] <= 0.0f) {
+        StickCP2.Display.setTextColor(TFT_LIGHTGREY);
+        StickCP2.Display.drawString("No holding set", 20, y);
+        StickCP2.Display.setTextFont(1);
+        StickCP2.Display.drawString("Set via WiFi portal", 20, y + 20);
+        return;
+    }
+
+    if (!valid[i]) {
+        StickCP2.Display.setTextColor(TFT_RED);
+        StickCP2.Display.drawString("Price not available", 20, y);
+        return;
+    }
+
+    float cost = qty[i] * buy[i];
+    float value = qty[i] * prices[i];
+    float pl = value - cost;
+    float plPct = ((prices[i] - buy[i]) / buy[i]) * 100.0f;
+
+    // Holding and Avg Buy
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Holding: %.3f", qty[i]);
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.drawString(buf, 10, y);
+    y += 22;
+    snprintf(buf, sizeof(buf), "Avg Buy: $%.2f", buy[i]);
+    StickCP2.Display.drawString(buf, 10, y);
+    y += 22;
+    snprintf(buf, sizeof(buf), "Current: $%.2f", prices[i]);
+    StickCP2.Display.drawString(buf, 10, y);
+    y += 22;
+
+    // P&L
+    uint32_t plColor = pl >= 0.0f ? TFT_GREEN : TFT_RED;
+    StickCP2.Display.setTextColor(plColor);
+    snprintf(buf, sizeof(buf), "P/L: $%.2f (%.2f%%)", pl, plPct);
+    StickCP2.Display.drawString(buf, 10, y);
+}
+
 void drawSettings() {
     int w = StickCP2.Display.width();
     int h = StickCP2.Display.height();
@@ -262,7 +335,10 @@ void drawSettings() {
         StickCP2.Display.setTextColor(i == settingsIndex ? TFT_BLACK : TFT_WHITE);
         if (i == settingsIndex) StickCP2.Display.fillRect(0, y, w, 20, TFT_CYAN);
         String line = menuLabels[i];
-        if (i == 1) line += viewMode == 0 ? " (Card)" : " (List)";
+        if (i == 1) {
+            String vname = viewMode == 0 ? "Card" : (viewMode == 1 ? "List" : "Portfolio");
+            line += " (" + vname + ")";
+        }
         if (i == 2) {
             if (idleSeconds == 0) line += ": Off";
             else if (idleSeconds < 60) line += ": " + String(idleSeconds) + "s";
@@ -279,7 +355,8 @@ void drawSettings() {
 void redraw() {
     if (settingsMode) drawSettings();
     else if (viewMode == 0) drawStock(currentSymbol);
-    else                    drawList();
+    else if (viewMode == 1) drawList();
+    else                    drawPortfolio(currentSymbol);
 }
 
 // ----- WiFi change via simple AP + web form -----
@@ -299,6 +376,7 @@ void handleConfigRoot() {
     html += "<p>View: <select name='view' style='font-size:16px;padding:5px'>";
     html += "<option value='0'" + String(viewMode == 0 ? " selected" : "") + ">Card</option>";
     html += "<option value='1'" + String(viewMode == 1 ? " selected" : "") + ">List</option>";
+    html += "<option value='2'" + String(viewMode == 2 ? " selected" : "") + ">Portfolio</option>";
     html += "</select></p>";
     html += "<p>Idle Timeout: <select name='idle' style='font-size:16px;padding:5px'>";
     int idleOpts[] = {0, 60, 120, 300, 600, 1800};
@@ -309,6 +387,19 @@ void handleConfigRoot() {
                 ">" + idleLabels[j] + "</option>";
     }
     html += "</select></p>";
+    // Add portfolio fields
+    html += "<h3>Portfolio (per stock)</h3>";
+    html += "<table style='border-collapse:collapse;font-size:14px'>";
+    html += "<tr><th>Symbol</th><th>Holding</th><th>Avg Buy</th></tr>";
+    for (int j = 0; j < NUM_SYMBOLS; j++) {
+        html += "<tr>";
+        html += "<td>" + String(SYMBOLS[j]) + "</td>";
+        html += "<td><input name='q" + String(j) + "' value='" + String(qty[j], 3) + "' size='6' style='font-size:14px'></td>";
+        html += "<td><input name='b" + String(j) + "' value='" + String(buy[j], 2) + "' size='8' style='font-size:14px'></td>";
+        html += "</tr>";
+    }
+    html += "</table>";
+
     html += "<p><button type='submit' style='font-size:16px;padding:8px 20px'>Save & Restart</button></p>";
     html += "</form></body></html>";
     configServer.send(200, "text/html", html);
@@ -326,6 +417,16 @@ void handleConfigSave() {
     }
     if (view.length() > 0) prefs.putInt("view", view.toInt());
     if (idle.length() > 0) prefs.putInt("idle", idle.toInt());
+
+    // Portfolio fields
+    for (int j = 0; j < NUM_SYMBOLS; j++) {
+        String qArg = "q" + String(j);
+        String bArg = "b" + String(j);
+        if (configServer.hasArg(qArg) && configServer.hasArg(bArg)) {
+            prefs.putFloat(("qty" + String(SYMBOLS[j])).c_str(), configServer.arg(qArg).toFloat());
+            prefs.putFloat(("buy" + String(SYMBOLS[j])).c_str(), configServer.arg(bArg).toFloat());
+        }
+    }
 
     configServer.send(200, "text/html", "<h2>Saved! Restarting...</h2>");
     delay(1500);
@@ -395,6 +496,11 @@ void setup() {
     idleSeconds = prefs.getInt("idle", 300);
     viewMode = prefs.getInt("view", 0);
 
+    for (int j = 0; j < NUM_SYMBOLS; j++) {
+        qty[j] = prefs.getFloat(("qty" + String(SYMBOLS[j])).c_str(), 0.0f);
+        buy[j] = prefs.getFloat(("buy" + String(SYMBOLS[j])).c_str(), 0.0f);
+    }
+
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
     WiFi.begin(WIFI_SSID.c_str(), WIFI_PASS.c_str());
@@ -438,7 +544,7 @@ void loop() {
                 startConfigPortal();
             } else if (settingsIndex == 1) {
                 // Toggle view
-                viewMode = (viewMode + 1) % 2;
+                viewMode = (viewMode + 1) % 3;
                 prefs.putInt("view", viewMode);
                 drawSettings();
             } else if (settingsIndex == 2) {
@@ -504,11 +610,11 @@ void loop() {
         }
     }
 
-    // Hold Button B to toggle card/list view
+    // Hold Button B to toggle view mode
     if (StickCP2.BtnB.wasHold()) {
         lastActivity = millis();
         if (!screenOff) {
-            viewMode = (viewMode + 1) % 2;
+            viewMode = (viewMode + 1) % 3;
             prefs.putInt("view", viewMode);
             redraw();
             lastSwitch = millis();
@@ -516,8 +622,8 @@ void loop() {
         }
     }
 
-    // Auto-rotate every 6 seconds (card view only)
-    if (!screenOff && viewMode == 0 && millis() - lastSwitch >= SWITCH_MS) {
+    // Auto-rotate every 6 seconds (card and portfolio view only)
+    if (!screenOff && (viewMode == 0 || viewMode == 2) && millis() - lastSwitch >= SWITCH_MS) {
         currentSymbol = (currentSymbol + 1) % NUM_SYMBOLS;
         redraw();
         lastSwitch = millis();
