@@ -276,15 +276,14 @@ void drawPortfolio(int i) {
     StickCP2.Display.setTextDatum(middle_center);
     StickCP2.Display.drawString(SYMBOLS[i], w / 2, 34);
 
-    int y = 70;
-    StickCP2.Display.setTextFont(2);
+    int y = 66;
+    StickCP2.Display.setTextFont(1);
     StickCP2.Display.setTextDatum(top_left);
 
     if (qty[i] <= 0.0f || buy[i] <= 0.0f) {
         StickCP2.Display.setTextColor(TFT_LIGHTGREY);
         StickCP2.Display.drawString("No holding set", 20, y);
-        StickCP2.Display.setTextFont(1);
-        StickCP2.Display.drawString("Set via WiFi portal", 20, y + 20);
+        StickCP2.Display.drawString("Set via WiFi portal", 20, y + 14);
         return;
     }
 
@@ -304,19 +303,38 @@ void drawPortfolio(int i) {
     snprintf(buf, sizeof(buf), "Holding: %.3f", qty[i]);
     StickCP2.Display.setTextColor(TFT_WHITE);
     StickCP2.Display.drawString(buf, 10, y);
-    y += 22;
+    y += 16;
     snprintf(buf, sizeof(buf), "Avg Buy: $%.2f", buy[i]);
     StickCP2.Display.drawString(buf, 10, y);
-    y += 22;
+    y += 16;
     snprintf(buf, sizeof(buf), "Current: $%.2f", prices[i]);
     StickCP2.Display.drawString(buf, 10, y);
-    y += 22;
+    y += 16;
+    snprintf(buf, sizeof(buf), "Cost: $%.2f", cost);
+    StickCP2.Display.drawString(buf, 10, y);
+    y += 16;
+    snprintf(buf, sizeof(buf), "Value: $%.2f", value);
+    StickCP2.Display.drawString(buf, 10, y);
+    y += 20;
 
-    // P&L
+    // P&L - two lines
     uint32_t plColor = pl >= 0.0f ? TFT_GREEN : TFT_RED;
     StickCP2.Display.setTextColor(plColor);
-    snprintf(buf, sizeof(buf), "P/L: $%.2f (%.2f%%)", pl, plPct);
+    StickCP2.Display.setTextFont(2);
+    snprintf(buf, sizeof(buf), "P/L: $%.2f", pl);
     StickCP2.Display.drawString(buf, 10, y);
+    y += 20;
+    snprintf(buf, sizeof(buf), "%.2f%%", plPct);
+    StickCP2.Display.drawString(buf, 10, y);
+
+    // Page dots
+    int dotSize = 4, spacing = 10;
+    int startX = (w - (NUM_SYMBOLS * spacing - dotSize)) / 2;
+    for (int j = 0; j < NUM_SYMBOLS; j++) {
+        int cx = startX + j * spacing;
+        if (j == i) StickCP2.Display.fillCircle(cx, h - 7, dotSize / 2 + 1, plColor);
+        else        StickCP2.Display.drawCircle(cx, h - 7, dotSize / 2, TFT_DARKGREY);
+    }
 }
 
 void drawSettings() {
@@ -399,6 +417,8 @@ void handleConfigRoot() {
         html += "</tr>";
     }
     html += "</table>";
+    html += "<p><a href='/export' style='font-size:16px'>Export Portfolio (JSON)</a> | ";
+    html += "<a href='/import' style='font-size:16px'>Import Portfolio (JSON)</a></p>";
 
     html += "<p><button type='submit' style='font-size:16px;padding:8px 20px'>Save & Restart</button></p>";
     html += "</form></body></html>";
@@ -433,12 +453,84 @@ void handleConfigSave() {
     ESP.restart();
 }
 
+void handleConfigExport() {
+    String json = "{";
+    for (int j = 0; j < NUM_SYMBOLS; j++) {
+        if (j > 0) json += ",";
+        json += "\"" + String(SYMBOLS[j]) + "\":{";
+        json += "\"qty\":" + String(qty[j], 3) + ",";
+        json += "\"buy\":" + String(buy[j], 3) + "}";
+    }
+    json += "}";
+    configServer.send(200, "application/json", json);
+}
+
+float findJsonNumber(const String& json, const String& key) {
+    int kIdx = json.indexOf("\"" + key + "\"");
+    if (kIdx < 0) return 0.0f;
+    int start = kIdx + key.length() + 2;  // skip past "key"
+    while (start < (int)json.length() &&
+           (json[start] == ' ' || json[start] == ':' || json[start] == '\"' ||
+            json[start] == '\t' || json[start] == '\n' || json[start] == '\r')) start++;
+    if (start >= (int)json.length()) return 0.0f;
+    char numBuf[32];
+    int n = 0;
+    while (start < (int)json.length() && n < 31 &&
+           ((json[start] >= '0' && json[start] <= '9') ||
+            json[start] == '-' || json[start] == '+' ||
+            json[start] == '.' || json[start] == 'e' || json[start] == 'E')) {
+        numBuf[n++] = json[start++];
+    }
+    numBuf[n] = '\0';
+    if (n > 0) return atof(numBuf);
+    return 0.0f;
+}
+
+void parsePortfolioJson(const String& json) {
+    for (int j = 0; j < NUM_SYMBOLS; j++) {
+        String sym = "\"" + String(SYMBOLS[j]) + "\"";
+        int sIdx = json.indexOf(sym);
+        if (sIdx >= 0) {
+            int objStart = json.indexOf("{", sIdx);
+            int objEnd = json.indexOf("}", objStart);
+            if (objStart >= 0 && objEnd > objStart) {
+                String obj = json.substring(objStart, objEnd + 1);
+                qty[j] = findJsonNumber(obj, "qty");
+                buy[j] = findJsonNumber(obj, "buy");
+                prefs.putFloat(("qty" + String(SYMBOLS[j])).c_str(), qty[j]);
+                prefs.putFloat(("buy" + String(SYMBOLS[j])).c_str(), buy[j]);
+            }
+        }
+    }
+}
+
+void handleConfigImport() {
+    if (configServer.method() == HTTP_POST) {
+        String json = configServer.arg("json");
+        parsePortfolioJson(json);
+        configServer.send(200, "text/html", "<h2>Portfolio imported!</h2><p><a href='/'>Back to setup</a></p>");
+    } else {
+        String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
+        html += "<title>Import Portfolio</title></head><body style='font-family:sans-serif;margin:20px'>";
+        html += "<h2>Import Portfolio JSON</h2>";
+        html += "<form action='/import' method='post'>";
+        html += "<p><textarea name='json' rows='10' cols='40' style='font-size:14px;padding:5px' placeholder='{\"AMZN\":{\"qty\":12,\"buy\":205.095}, ...}'></textarea></p>";
+        html += "<p><button type='submit' style='font-size:16px;padding:8px 20px'>Import</button></p>";
+        html += "</form>";
+        html += "<p><a href='/export'>Export current portfolio</a></p>";
+        html += "</body></html>";
+        configServer.send(200, "text/html", html);
+    }
+}
+
 void startConfigPortal() {
     WiFi.mode(WIFI_AP);
     WiFi.softAP("M5-StockTicker", "18067300");
 
     configServer.on("/", handleConfigRoot);
     configServer.on("/save", HTTP_POST, handleConfigSave);
+    configServer.on("/export", HTTP_GET, handleConfigExport);
+    configServer.on("/import", handleConfigImport);
     configServer.begin();
 
     StickCP2.Display.fillScreen(TFT_BLACK);
