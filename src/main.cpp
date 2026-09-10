@@ -243,15 +243,15 @@ void loop() {
         lastSwitch = millis();
     }
 
-    // Button B = previous stock (or toggle view on hold)
+    // Button B = previous stock
     if (StickCP2.BtnB.wasPressed()) {
         currentSymbol = (currentSymbol + NUM_SYMBOLS - 1) % NUM_SYMBOLS;
         redraw();
         lastSwitch = millis();
     }
 
-    // Hold Button A to toggle card/list view
-    if (StickCP2.BtnA.wasHold()) {
+    // Hold Button B to toggle card/list view
+    if (StickCP2.BtnB.wasHold()) {
         viewMode = (viewMode + 1) % 2;
         redraw();
         lastSwitch = millis();
