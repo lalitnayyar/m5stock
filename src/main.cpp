@@ -6,6 +6,7 @@
 #include <WiFiManager.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include <time.h>
 
 // ----- Defaults -----
 const char* DEFAULT_STA_SSID = "nayyar910";
@@ -51,6 +52,7 @@ bool    screenOff = false;
 unsigned long lastActivity = 0;
 bool    settingsMode = false;
 int     settingsIndex = 0;
+bool    showStatus = false;
 
 WiFiManager   wm;
 WebServer     server(80);
@@ -532,8 +534,8 @@ void setupWeb() {
 }
 
 // ----- On-device settings menu -----
-const char* menuLabels[] = {"View", "Bright", "Refresh", "Scroll", "Auto", "Idle", "Power Off", "Back"};
-const int MENU_ITEMS = 8;
+const char* menuLabels[] = {"View", "Bright", "Refresh", "Scroll", "Auto", "Idle", "Power Off", "Status", "Back"};
+const int MENU_ITEMS = 9;
 
 int findIndex(int value, const int* arr, int n) {
     for (int i = 0; i < n; i++) if (arr[i] == value) return i;
@@ -562,7 +564,8 @@ void drawSettings() {
             case 4: val = autoScroll ? "On" : "Off"; break;
             case 5: val = idleSeconds == 0 ? "Off" : (String(idleSeconds) + "s"); break;
             case 6: val = "press B"; break;
-            case 7: val = ""; break;
+            case 7: val = "press B"; break;
+            case 8: val = ""; break;
         }
         String line = String(menuLabels[i]) + (val.length() ? (": " + val) : "");
         StickCP2.Display.drawString(line.c_str(), 4, y);
@@ -573,13 +576,43 @@ void drawSettings() {
     StickCP2.Display.drawString("A=next  B=change  A-hold=exit", 4, h - 12);
 }
 
+void drawStatus() {
+    int w = StickCP2.Display.width();
+    int h = StickCP2.Display.height();
+    StickCP2.Display.fillScreen(TFT_BLACK);
+    drawHeader(TFT_CYAN, " STATUS");
+
+    String ssid = (WiFi.status() == WL_CONNECTED) ? WiFi.SSID() : "Not connected";
+    String ip   = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "--";
+
+    struct tm timeinfo;
+    String timeStr;
+    if (getLocalTime(&timeinfo)) {
+        char buf[64];
+        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        timeStr = String(buf) + "  NY";
+    } else {
+        timeStr = "Time not synced";
+    }
+
+    StickCP2.Display.setTextFont(1);
+    StickCP2.Display.setTextColor(TFT_WHITE);
+    StickCP2.Display.setTextDatum(top_left);
+    int y = 24;
+    StickCP2.Display.drawString(("WiFi: " + ssid).c_str(), 4, y); y += 16;
+    StickCP2.Display.drawString(("IP:   " + ip).c_str(), 4, y); y += 16;
+    StickCP2.Display.drawString(("Time: " + timeStr).c_str(), 4, y); y += 16;
+    StickCP2.Display.setTextColor(TFT_LIGHTGREY);
+    StickCP2.Display.drawString("Press A/B or hold A", 4, h - 12);
+}
+
 void settingsNext() {
     settingsIndex = (settingsIndex + 1) % MENU_ITEMS;
     drawSettings();
 }
 
 void settingsChange() {
-    if (settingsIndex == 7) {
+    if (settingsIndex == 8) {
         settingsMode = false;
         saveSettings();
         StickCP2.Display.setBrightness(brightness);
@@ -590,6 +623,12 @@ void settingsChange() {
         showMessage("Power off", "Press power to wake");
         delay(1000);
         M5.Power.powerOff();
+        return;
+    }
+    if (settingsIndex == 7) {
+        showStatus = true;
+        lastActivity = millis();
+        drawStatus();
         return;
     }
     switch (settingsIndex) {
@@ -663,6 +702,11 @@ void setup() {
     showMessage("Connected", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
     delay(1200);
 
+    // Sync NYSE/Eastern time
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+    tzset();
+
     setupWeb();
     showMessage("Updating", "Fetching stocks...");
     startRefresh();
@@ -687,13 +731,21 @@ void loop() {
     stepRefresh();
 
     if (settingsMode) {
-        if (StickCP2.BtnA.wasPressed()) settingsNext();
-        if (StickCP2.BtnB.wasPressed()) settingsChange();
-        if (StickCP2.BtnA.wasHold()) {
-            settingsMode = false;
-            saveSettings();
-            StickCP2.Display.setBrightness(brightness);
-            redraw();
+        if (showStatus) {
+            if (StickCP2.BtnA.wasPressed() || StickCP2.BtnB.wasPressed() || StickCP2.BtnA.wasHold()) {
+                showStatus = false;
+                lastActivity = millis();
+                drawSettings();
+            }
+        } else {
+            if (StickCP2.BtnA.wasPressed()) settingsNext();
+            if (StickCP2.BtnB.wasPressed()) settingsChange();
+            if (StickCP2.BtnA.wasHold()) {
+                settingsMode = false;
+                saveSettings();
+                StickCP2.Display.setBrightness(brightness);
+                redraw();
+            }
         }
     } else {
         if (StickCP2.BtnA.wasPressed()) {
